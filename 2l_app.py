@@ -7,27 +7,43 @@ import time
 import io
 import re
 from datetime import datetime
+import fitz  # PyMuPDF for PDF extraction
 
-# Get OpenAI API Key from Streamlit Secrets
+# Load OpenAI API Key securely
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 st.set_page_config(page_title="2l Filing Extractor", layout="wide")
-st.title("📊 2l Filing Extractor with Symbol, Company, Sector & Type")
+st.title("📄 2l Filing Extractor with PDF Support")
 
-# ----------- Functions -----------
+# ---------------- PDF + Web Text Fetching ----------------
 
 def fetch_clean_text(url):
     try:
-        res = requests.get(url, timeout=10)
-        soup = BeautifulSoup(res.text, "html.parser")
-        for tag in soup(["script", "style"]): tag.decompose()
-        return soup.get_text(separator=" ", strip=True)[:4000]
+        if url.lower().endswith(".pdf"):
+            # Download and extract PDF text
+            response = requests.get(url, timeout=10)
+            with open("temp.pdf", "wb") as f:
+                f.write(response.content)
+            doc = fitz.open("temp.pdf")
+            text = ""
+            for page in doc:
+                text += page.get_text()
+            doc.close()
+            return text[:4000] if text else "Error: No text found in PDF"
+        else:
+            # Fallback for HTML links
+            res = requests.get(url, timeout=10)
+            soup = BeautifulSoup(res.text, "html.parser")
+            for tag in soup(["script", "style"]): tag.decompose()
+            return soup.get_text(separator=" ", strip=True)[:4000]
     except Exception as e:
         return f"Error fetching {url}: {str(e)}"
 
+# ---------------- 2l Prompt + Parsing ----------------
+
 def generate_2l_format(text):
     prompt = f"""
-You are an expert equity research analyst. Given the following content from a web page, extract the information and present it in this custom format called '2l':
+You are an expert equity research analyst. Given the following content from a web page or PDF, extract the information and present it in this custom format called '2l':
 
 1. Key pointers and very important
 2. Summarize this (if possible, add % with this)
@@ -63,6 +79,8 @@ def parse_2l(response):
         elif line.startswith("5."): values[4] = line.partition(".")[2].strip()
         elif line.startswith("6."): values[5] = line.partition(".")[2].strip()
     return values
+
+# ---------------- Metadata Extraction ----------------
 
 def extract_company(text):
     match = re.search(r"([A-Z][a-z]+(?: [A-Z][a-z]+)* (?:Limited|Ltd|Industries|Corporation))", text)
@@ -127,9 +145,9 @@ def extract_date_from_url(url):
         return f"{y}-{m}-{d}"
     return datetime.today().strftime("%Y-%m-%d")
 
-# ----------- Streamlit Interface -----------
+# ---------------- Streamlit App UI ----------------
 
-uploaded_file = st.file_uploader("📄 Upload a CSV file with a 'link' column", type="csv")
+uploaded_file = st.file_uploader("📄 Upload CSV file with 'link' column", type="csv")
 
 if uploaded_file:
     df_links = pd.read_csv(uploaded_file)
@@ -137,7 +155,7 @@ if uploaded_file:
     if 'link' not in df_links.columns:
         st.error("CSV must contain a 'link' column.")
     else:
-        if st.button("🔍 Start Extraction"):
+        if st.button("🔍 Run Extraction"):
             output_data = []
             progress = st.progress(0)
             status = st.empty()
@@ -146,6 +164,7 @@ if uploaded_file:
                 link = row['link']
                 status.text(f"Processing {i+1}/{len(df_links)}: {link}")
                 text = fetch_clean_text(link)
+
                 if text.startswith("Error"):
                     output_data.append([link, "Unknown", "Unknown", "Unknown", "Error", "Error"] + ["Error"]*6)
                     continue
@@ -161,7 +180,7 @@ if uploaded_file:
 
                 output_data.append([link, symbol, company, sector, date, ann_type] + values)
                 progress.progress((i+1)/len(df_links))
-                time.sleep(1.5)
+                time.sleep(1.2)
 
             columns = ["Link", "Symbol", "Company", "Sector", "Date", "Announcement Type",
                        "Key Pointers", "Summary", "Final Summary",
@@ -178,4 +197,3 @@ if uploaded_file:
                                data=buffer.getvalue(),
                                file_name="2l_summary.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
