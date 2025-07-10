@@ -1,7 +1,6 @@
 streamlit
 openai
 pandas
-beautifulsoup4
 requests
 openpyxl
 pymupdf
